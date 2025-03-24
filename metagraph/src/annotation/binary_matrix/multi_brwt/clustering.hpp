@@ -34,6 +34,8 @@ greedy_matching(const std::vector<T> &columns, size_t num_threads = 1);
 // result[i, 2] = dist(result[i, 0], result[i, 1])
 // Input: columns, where each column `T` is either `sdsl::bit_vector` or
 // `SparseColumn` storing the column size and the positions of its set bits.
+// 
+// Linkage [i]: [cluster_1] [cluster_2] [num_set_bits] [new_cluster_id]
 template <class T>
 LinkageMatrix
 agglomerative_greedy_linkage(std::vector<T>&& columns, size_t num_threads = 1);

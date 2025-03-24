@@ -7,21 +7,21 @@
 #include "common/serialization.hpp"
 #include "common/utils/template_utils.hpp"
 
-
 namespace mtg {
 namespace annot {
 namespace matrix {
 
+// Function to get the value at a specific row and column
 bool BRWT::get(Row row, Column column) const {
-    assert(row < num_rows());
-    assert(column < num_columns());
+    assert(row < num_rows()); // Ensure the row is within bounds
+    assert(column < num_columns()); // Ensure the column is within bounds
 
-    // if leaf
+    // If this is a leaf node
     if (!child_nodes_.size())
-        return (*nonzero_rows_)[row];
+        return (*nonzero_rows_)[row]; // Return the value directly
 
     uint64_t rank = nonzero_rows_->conditional_rank1(row);
-    // terminate if the index bit is unset
+    // If the index bit is unset, return false
     if (!rank)
         return false;
 
@@ -29,12 +29,13 @@ bool BRWT::get(Row row, Column column) const {
     return child_nodes_[child_node]->get(rank - 1, assignments_.rank(column));
 }
 
+// Function to get the positions of set bits in specific rows
 std::vector<BRWT::SetBitPositions>
 BRWT::get_rows(const std::vector<Row> &row_ids) const {
     std::vector<SetBitPositions> rows(row_ids.size());
 
     Vector<Column> slice;
-    // expect at least 3 relations per row
+    // Expect at least 3 relations per row
     slice.reserve(row_ids.size() * 4);
 
     slice_rows(row_ids, &slice);
@@ -44,7 +45,7 @@ BRWT::get_rows(const std::vector<Row> &row_ids) const {
     auto row_begin = slice.begin();
 
     for (size_t i = 0; i < rows.size(); ++i) {
-        // every row in `slice` ends with `-1`
+        // Every row in `slice` ends with `-1`
         auto row_end = std::find(row_begin, slice.end(),
                                  std::numeric_limits<Column>::max());
         rows[i].assign(row_begin, row_end);
@@ -54,12 +55,13 @@ BRWT::get_rows(const std::vector<Row> &row_ids) const {
     return rows;
 }
 
+// Function to get the column ranks in specific rows
 std::vector<Vector<std::pair<BRWT::Column, uint64_t>>>
 BRWT::get_column_ranks(const std::vector<Row> &row_ids) const {
     std::vector<Vector<std::pair<Column, uint64_t>>> rows(row_ids.size());
 
     Vector<std::pair<Column, uint64_t>> slice;
-    // expect at least 3 relations per row
+    // Expect at least 3 relations per row
     slice.reserve(row_ids.size() * 4);
 
     slice_rows(row_ids, &slice);
@@ -69,7 +71,7 @@ BRWT::get_column_ranks(const std::vector<Row> &row_ids) const {
     auto row_begin = slice.begin();
 
     for (size_t i = 0; i < rows.size(); ++i) {
-        // every row in `slice` ends with `-1`
+        // Every row in `slice` ends with `-1`
         auto row_end = row_begin;
         while (row_end->first != std::numeric_limits<Column>::max()) {
             ++row_end;
@@ -82,11 +84,7 @@ BRWT::get_column_ranks(const std::vector<Row> &row_ids) const {
     return rows;
 }
 
-// If T = Column
-//      return positions of set bits.
-// If T = std::pair<Column, uint64_t>
-//      return positions of set bits with their column ranks.
-// Appends to `slice`
+// Template function to slice rows and append to `slice`
 template <typename T>
 void BRWT::slice_rows(const std::vector<Row> &row_ids, Vector<T> *slice) const {
     T delim;
@@ -96,7 +94,7 @@ void BRWT::slice_rows(const std::vector<Row> &row_ids, Vector<T> *slice) const {
         delim = std::numeric_limits<Column>::max();
     }
 
-    // check if this is a leaf
+    // Check if this is a leaf node
     if (!child_nodes_.size()) {
         assert(assignments_.size() == 1);
 
@@ -105,12 +103,12 @@ void BRWT::slice_rows(const std::vector<Row> &row_ids, Vector<T> *slice) const {
 
             if constexpr(utils::is_pair_v<T>) {
                 if (uint64_t rank = nonzero_rows_->conditional_rank1(i)) {
-                    // only a single column is stored in leaves
+                    // Only a single column is stored in leaves
                     slice->emplace_back(0, rank);
                 }
             } else {
                 if ((*nonzero_rows_)[i]) {
-                    // only a single column is stored in leaves
+                    // Only a single column is stored in leaves
                     slice->push_back(0);
                 }
             }
@@ -120,7 +118,7 @@ void BRWT::slice_rows(const std::vector<Row> &row_ids, Vector<T> *slice) const {
         return;
     }
 
-    // construct indexing for children and the inverse mapping
+    // Construct indexing for children and the inverse mapping
     std::vector<Row> child_row_ids;
     child_row_ids.reserve(row_ids.size());
 
@@ -131,18 +129,17 @@ void BRWT::slice_rows(const std::vector<Row> &row_ids, Vector<T> *slice) const {
 
         uint64_t global_offset = row_ids[i];
 
-        // if next word contains 5 or more positions, query the whole word
-        // we assume that get_int is roughly 5 times slower than operator[]
+        // If next word contains 5 or more positions, query the whole word
         if (i + 4 < row_ids.size()
                 && row_ids[i + 4] < global_offset + 64
                 && row_ids[i + 4] >= global_offset
                 && global_offset + 64 <= nonzero_rows_->size()) {
-            // get the word
+            // Get the word
             uint64_t word = nonzero_rows_->get_int(global_offset, 64);
             uint64_t rank = -1ULL;
 
             do {
-                // check index
+                // Check index
                 uint8_t offset = row_ids[i] - global_offset;
                 if (word & (1ULL << offset)) {
                     if (rank == -1ULL)
@@ -150,7 +147,7 @@ void BRWT::slice_rows(const std::vector<Row> &row_ids, Vector<T> *slice) const {
                                 ? nonzero_rows_->rank1(global_offset - 1)
                                 : 0;
 
-                    // map index from parent's to children's coordinate system
+                    // Map index from parent's to children's coordinate system
                     child_row_ids.push_back(rank + sdsl::bits::cnt(word & sdsl::bits::lo_set[offset + 1]) - 1);
                     skip_row[i] = false;
                 }
@@ -160,9 +157,9 @@ void BRWT::slice_rows(const std::vector<Row> &row_ids, Vector<T> *slice) const {
             --i;
 
         } else {
-            // check index
+            // Check index
             if (uint64_t rank = nonzero_rows_->conditional_rank1(global_offset)) {
-                // map index from parent's to children's coordinate system
+                // Map index from parent's to children's coordinate system
                 child_row_ids.push_back(rank - 1);
                 skip_row[i] = false;
             }
@@ -176,11 +173,7 @@ void BRWT::slice_rows(const std::vector<Row> &row_ids, Vector<T> *slice) const {
         return;
     }
 
-    // TODO: query by columns and merge them in the very end to avoid remapping
-    //       the same column indexes many times when propagating to the root.
-    // TODO: implement a cache efficient method for merging the columns.
-
-    // query all children subtrees and get relations from them
+    // Query all children subtrees and get relations from them
     size_t slice_start = slice->size();
 
     std::vector<size_t> pos(child_nodes_.size());
@@ -191,7 +184,7 @@ void BRWT::slice_rows(const std::vector<Row> &row_ids, Vector<T> *slice) const {
 
         assert(slice->size() >= pos[j] + child_row_ids.size());
 
-        // transform column indexes
+        // Transform column indexes
         for (size_t i = pos[j]; i < slice->size(); ++i) {
             auto &v = (*slice)[i];
             if (v != delim) {
@@ -205,7 +198,7 @@ void BRWT::slice_rows(const std::vector<Row> &row_ids, Vector<T> *slice) const {
 
     for (size_t i = 0; i < row_ids.size(); ++i) {
         if (!skip_row[i]) {
-            // merge rows from child submatrices
+            // Merge rows from child submatrices
             for (size_t &p : pos) {
                 while ((*slice)[p++] != delim) {
                     slice->push_back((*slice)[p - 1]);
@@ -218,18 +211,19 @@ void BRWT::slice_rows(const std::vector<Row> &row_ids, Vector<T> *slice) const {
     slice->erase(slice->begin() + slice_start, slice->begin() + slice_offset);
 }
 
+// Function to get the rows corresponding to a specific column
 std::vector<BRWT::Row> BRWT::get_column(Column column) const {
-    assert(column < num_columns());
+    assert(column < num_columns()); // Ensure the column is within bounds
 
     auto num_nonzero_rows = nonzero_rows_->num_set_bits();
 
-    // check if the column is empty
+    // Check if the column is empty
     if (!num_nonzero_rows)
         return {};
 
-    // check whether it is a leaf
+    // Check whether it is a leaf node
     if (!child_nodes_.size()) {
-        // return the index column
+        // Return the index column
         std::vector<BRWT::Row> result;
         result.reserve(num_nonzero_rows);
         nonzero_rows_->call_ones([&](auto i) { result.push_back(i); });
@@ -239,17 +233,18 @@ std::vector<BRWT::Row> BRWT::get_column(Column column) const {
     auto child_node = assignments_.group(column);
     auto rows = child_nodes_[child_node]->get_column(assignments_.rank(column));
 
-    // check if we need to update the row indexes
+    // Check if we need to update the row indexes
     if (num_nonzero_rows == nonzero_rows_->size())
         return rows;
 
-    // shift indexes
+    // Shift indexes
     for (size_t i = 0; i < rows.size(); ++i) {
         rows[i] = nonzero_rows_->select1(rows[i] + 1);
     }
     return rows;
 }
 
+// Function to load the BRWT from an input stream
 bool BRWT::load(std::istream &in) {
     if (!in.good())
         return false;
@@ -276,6 +271,7 @@ bool BRWT::load(std::istream &in) {
     }
 }
 
+// Function to serialize the BRWT to an output stream
 void BRWT::serialize(std::ostream &out) const {
     if (!out.good())
         throw std::ofstream::failure("Error when dumping BRWT");
@@ -293,6 +289,7 @@ void BRWT::serialize(std::ostream &out) const {
     }
 }
 
+// Function to get the number of relations in the BRWT
 uint64_t BRWT::num_relations() const {
     if (!child_nodes_.size())
         return nonzero_rows_->num_set_bits();
@@ -305,6 +302,7 @@ uint64_t BRWT::num_relations() const {
     return num_set_bits;
 }
 
+// Function to get the average arity of the BRWT
 double BRWT::avg_arity() const {
     if (!child_nodes_.size())
         return 0;
@@ -324,6 +322,7 @@ double BRWT::avg_arity() const {
             : 0;
 }
 
+// Function to get the number of nodes in the BRWT
 uint64_t BRWT::num_nodes() const {
     uint64_t num_nodes = 0;
 
@@ -332,6 +331,7 @@ uint64_t BRWT::num_nodes() const {
     return num_nodes;
 }
 
+// Function to get the shrinking rate of the BRWT
 double BRWT::shrinking_rate() const {
     double rate_sum = 0;
     uint64_t num_nodes = 0;
@@ -347,19 +347,73 @@ double BRWT::shrinking_rate() const {
     return rate_sum / num_nodes;
 }
 
+// Function to print the tree structure of the BRWT
+// void BRWT::print_tree_structure(std::ostream &os) const {
+//     BFT([&os](const BRWT &node) {
+//         // Print node and its stats
+//         os << &node << "," << node.nonzero_rows_->size()
+//                     << "," << node.nonzero_rows_->num_set_bits(); // num_set_bits: number of ones in the matrix
+//         // Print all its children
+//         for (const auto &child : node.child_nodes_) {
+//             os << "," << child.get();
+//         }
+//         os << std::endl;
+//     });
+// }
+// void BRWT::print_tree_structure(std::ostream &os) const {
+//     BFT([&os](const BRWT &node) {
+//         // Print current node information
+//         // os << "Node: " << &node << "\n";
+//         // os << "  Nonzero Rows: " << node.nonzero_rows_->size() << "\n";
+//         // os << "  Number of Ones: " << node.nonzero_rows_->num_set_bits() << "\n";
+
+//         // Print the content of nonzero_rows_ (bit vector)
+//         os << "  Content of nonzero_rows_: ";
+//         for (size_t i = 0; i < node.nonzero_rows_->size(); ++i) {
+//             os << (*node.nonzero_rows_)[i];
+//         }
+//         // os << "\n";
+
+//         // Print child pointers
+//         // os << "  Children: ";
+//         // for (const auto &child : node.child_nodes_) {
+//             // os << child.get() << " ";
+//         // }
+//         os << "\n";
+//     });
+// }
 void BRWT::print_tree_structure(std::ostream &os) const {
-    BFT([&os](const BRWT &node) {
-        // print node and its stats
-        os << &node << "," << node.nonzero_rows_->size()
-                    << "," << node.nonzero_rows_->num_set_bits();
-        // print all its children
-        for (const auto &child : node.child_nodes_) {
-            os << "," << child.get();
+    int current_level = 0; // Keep track of the current level
+
+    // Breadth-First Traversal with a lambda for printing
+    BFT([&os, &current_level](const BRWT &node) {
+        // Determine the level of the current node based on its depth in the tree
+        static std::unordered_map<const BRWT*, int> levels;
+        if (levels.find(&node) == levels.end()) {
+            levels[&node] = current_level;
         }
-        os << std::endl;
+        int node_level = levels[&node];
+        
+        // Print level and indent appropriately
+        os << std::string(node_level * 2, ' '); // Indentation (2 spaces per level)
+        os << "Level " << node_level << ": ";
+
+        // Print the content of nonzero_rows_ (bit vector)
+        for (size_t i = 0; i < node.nonzero_rows_->size(); ++i) {
+            os << (*node.nonzero_rows_)[i] << " ";
+        }
+        os << "\n";
+
+        // Assign levels for children
+        for (const auto &child : node.child_nodes_) {
+            if (child) { // Ensure the child is not null
+                levels[child.get()] = node_level + 1;
+            }
+        }
     });
 }
 
+// Breadth-First Traversal (BFT) of the BRWT
 void BRWT::BFT(std::function<void(const BRWT &node)> callback) const {
     std::queue<const BRWT*> nodes_queue;
     nodes_queue.push(this);

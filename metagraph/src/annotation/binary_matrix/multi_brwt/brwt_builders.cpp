@@ -458,14 +458,21 @@ BRWT BRWTBottomUpBuilder::merge(std::vector<BRWT>&& nodes,
         num_columns_total += node.num_columns();
     }
 
+    std::cout << "Nodes size: " << nodes.size() << std::endl;
+
     for (size_t level = 1; nodes.size() > 1; ++level) {
         logger->trace("BRWT construction: level {}", level);
+        std::cout << "BRWT construction: level " << level << std::endl;
 
         VectorPtrs columns(nodes.size());
         for (size_t i = 0; i < nodes.size(); ++i) {
             columns[i] = nodes[i].nonzero_rows_.get();
         }
+
+        std::cout << "Calling partitioner function" << std::endl;
+        // call partitioner function
         auto groups = partitioner(columns);
+        std::cout << "Partitioner function called" << std::endl;
 
         assert(groups.size() > 0);
         assert(groups.size() < nodes.size());

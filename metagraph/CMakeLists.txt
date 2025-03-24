@@ -403,8 +403,9 @@ add_library(metagraph-cli STATIC ${metagraph_cli_files})
 add_dependencies(metagraph-core HTSLIB)
 
 add_executable(metagraph "src/main.cpp")
+# add_executable(brwt-benchmark "src/benchmark_matrix.cpp")
 set_target_properties(metagraph PROPERTIES OUTPUT_NAME "metagraph_${CMAKE_DBG_ALPHABET}")
-
+ 
 set(METALIBS ${METALIBS}
   -lKMC
   -lhts zlib deflate

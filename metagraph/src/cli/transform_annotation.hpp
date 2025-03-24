@@ -1,6 +1,8 @@
 #ifndef __TRANSFORM_ANNOTATION_HPP__
 #define __TRANSFORM_ANNOTATION_HPP__
 
+#include <string>
+#include <vector>
 
 namespace mtg {
 namespace cli {
@@ -12,6 +14,9 @@ int transform_annotation(Config *config);
 int merge_annotation(Config *config);
 
 int relax_multi_brwt(Config *config);
+
+std::vector<std::vector<uint64_t>>
+parse_linkage_matrix(const std::string &filename);
 
 } // namespace cli
 } // namespace mtg
