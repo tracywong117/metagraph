@@ -1,6 +1,8 @@
 #include "clustering.hpp"
 
 #include <algorithm>
+#include <random>
+#include <unordered_set>
 
 #include <ips4o.hpp>
 #include <progress_bar.hpp>
@@ -312,7 +314,7 @@ LinkageMatrix agglomerative_greedy_linkage(std::vector<T>&& columns, size_t num_
             = utils::arange<uint64_t>(0, columns.size());
 
     for (size_t level = 1; columns.size() > 1; ++level) {
-        logger->trace("Clustering: level {}", level);
+        logger->info("Clustering: level {}", level);
 
         Partition groups = greedy_matching(columns, num_threads);
 
@@ -365,11 +367,196 @@ LinkageMatrix agglomerative_greedy_linkage(std::vector<T>&& columns, size_t num_
     return linkage_matrix;
 }
 
+// --- 1) Limited‐neighbor greedy matching (O(k·N) sims per round) ---
+template<class T>
+mtg::annot::matrix::Partition
+greedy_matching_limited(const std::vector<T> &columns,
+                        size_t num_threads,
+                        size_t k = 10,
+                        uint64_t seed = 42)
+{
+    uint32_t N = columns.size();
+    if (N <= 1) return {};
+
+    struct Edge { uint32_t i, j; float sim; };
+    std::vector<Edge> best(N);
+
+    // clamp k
+    size_t real_k = std::min(k, (size_t)N - 1);
+
+    // prepare per‐thread RNG seeds
+    std::vector<uint64_t> rnd_seeds(num_threads);
+    {
+        std::mt19937_64 tmp(seed);
+        for (size_t t = 0; t < num_threads; ++t)
+            rnd_seeds[t] = tmp();
+    }
+
+    #pragma omp parallel num_threads(num_threads)
+    {
+        int tid = omp_get_thread_num();
+        std::mt19937_64 gen(rnd_seeds[tid]);
+        std::uniform_int_distribution<uint32_t> dist(0, N-2);
+
+        #pragma omp for schedule(static)
+        for (uint32_t i = 0; i < N; ++i) {
+            float  best_sim = -1.0f;
+            uint32_t best_j = i;
+
+            if (real_k == N - 1) {
+                // exact scan over all j ≠ i
+                for (uint32_t j = 0; j < N; ++j) {
+                    if (j == i) continue;
+                    float sim = intersection_ratio(columns[i], columns[j]);
+                    if (sim > best_sim
+                        || (sim == best_sim
+                            && first_closest(std::make_pair(i,j),
+                                             std::make_pair(i,best_j))))
+                    {
+                        best_sim = sim;
+                        best_j   = j;
+                    }
+                }
+            } else {
+                // pick real_k distinct random j ≠ i
+                std::unordered_set<uint32_t> picks;
+                picks.reserve(real_k);
+                while (picks.size() < real_k) {
+                    uint32_t x = dist(gen);
+                    uint32_t y = (x < i ? x : x + 1);
+                    picks.insert(y);
+                }
+                for (auto j : picks) {
+                    float sim = intersection_ratio(columns[i], columns[j]);
+                    if (sim > best_sim
+                        || (sim == best_sim
+                            && first_closest(std::make_pair(i,j),
+                                             std::make_pair(i,best_j))))
+                    {
+                        best_sim = sim;
+                        best_j   = j;
+                    }
+                }
+            }
+
+            best[i] = { i, best_j, best_sim };
+        }
+    } // omp
+
+    // sort only N edges → O(N log N)
+    std::sort(best.begin(), best.end(),
+        [&](auto &A, auto &B) {
+            if (A.sim != B.sim) return A.sim > B.sim;
+            return first_closest(std::make_pair(A.i,A.j),
+                                 std::make_pair(B.i,B.j));
+        });
+
+    // greedy match
+    std::vector<uint8_t> used(N, 0);
+    mtg::annot::matrix::Partition P;
+    P.reserve((N+1)/2);
+    for (auto &e : best) {
+        if (!used[e.i] && !used[e.j]) {
+            used[e.i] = used[e.j] = 1;
+            P.push_back({ e.i, e.j });
+        }
+    }
+    // singletons
+    for (uint32_t i = 0; i < N; ++i)
+        if (!used[i])
+            P.push_back({ i });
+
+    return P;
+}
+
+// --- 2) Modified agglomerative_greedy_linkage to call the above ---
+template <class T>
+LinkageMatrix agglomerative_greedy_linkage_k(std::vector<T>&& columns,
+                                           size_t num_threads, size_t k, uint64_t seed)
+{
+    // k is the number of neighbors to consider for each column
+    // at each round of clustering
+    // seed is for RNG
+    assert(k > 0);
+    
+    size_t N = columns.size();
+    if (N < 2) return LinkageMatrix(0,4);
+
+    LinkageMatrix linkage_matrix(N-1, 4);
+    size_t linkage_row = 0;
+    uint64_t next_cluster_id = N;
+
+    // track current IDs of each “column”
+    std::vector<uint64_t> column_ids(N);
+    std::iota(column_ids.begin(), column_ids.end(), 0ULL);
+
+    size_t level = 1;
+
+    while (columns.size() > 1) {
+        logger->info("Clustering level {}: {} clusters", level, columns.size());
+
+        // 1) form pairs by testing only k candidates each
+        Partition groups = greedy_matching_limited(columns, num_threads, k, seed + level);
+
+        // 2) merge paired columns
+        size_t G = groups.size();
+        std::vector<T> new_centers(G);
+        std::vector<uint64_t> new_ids(G);
+
+        ProgressBar pb(G, "Merging clusters", std::cout, !common::get_verbose());
+
+        #pragma omp parallel for num_threads(num_threads) schedule(dynamic)
+        for (size_t g = 0; g < G; ++g) {
+            // start with the first member of the group
+            new_centers[g] = std::move(columns[groups[g][0]]);
+
+            // merge any others in this group
+            for (size_t t = 1; t < groups[g].size(); ++t) {
+                union_merge(columns[groups[g][t]], &new_centers[g]);
+                columns[groups[g][t]] = T(); // free memory
+            }
+
+            uint64_t bits = count_set_bits(new_centers[g]);
+
+            #pragma omp critical
+            {
+                if (groups[g].size() == 2) {
+                    // a true merge → record in linkage matrix
+                    linkage_matrix(linkage_row,0) = column_ids[groups[g][0]];
+                    linkage_matrix(linkage_row,1) = column_ids[groups[g][1]];
+                    linkage_matrix(linkage_row,2) = bits;
+                    linkage_matrix(linkage_row,3) = next_cluster_id;
+                    new_ids[g] = next_cluster_id++;
+                    linkage_row++;
+                } else {
+                    // singleton carried forward
+                    new_ids[g] = column_ids[groups[g][0]];
+                }
+            }
+            ++pb;
+        }
+
+        // swap in the new level
+        columns.swap(new_centers);
+        column_ids.swap(new_ids);
+        level++;
+    }
+
+    assert(linkage_row == linkage_matrix.rows());
+    return linkage_matrix;
+}
+
 template
 LinkageMatrix agglomerative_greedy_linkage(std::vector<sdsl::bit_vector>&&, size_t);
 
 template
 LinkageMatrix agglomerative_greedy_linkage(std::vector<SparseColumn>&&, size_t);
+
+template
+LinkageMatrix agglomerative_greedy_linkage_k(std::vector<sdsl::bit_vector>&&, size_t, size_t, uint64_t);
+
+template
+LinkageMatrix agglomerative_greedy_linkage_k(std::vector<SparseColumn>&&, size_t, size_t, uint64_t);
 
 
 LinkageMatrix agglomerative_linkage_trivial(size_t num_columns) {

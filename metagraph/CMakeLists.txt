@@ -483,7 +483,7 @@ endif()
 
 target_link_libraries(metagraph-core ${METALIBS})
 add_subdirectory(external-libraries/Simple-Web-Server)
-target_link_libraries(metagraph-cli PRIVATE metagraph-core simple-web-server)
+target_link_libraries(metagraph-cli PUBLIC metagraph-core simple-web-server)
 target_link_libraries(metagraph metagraph-core metagraph-cli)
 
 add_custom_target(link_target ALL

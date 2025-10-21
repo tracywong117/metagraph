@@ -253,6 +253,8 @@ BRWT BRWTBottomUpBuilder::build(
             return node;
         };
     } else {
+        std::cout << "Warning: No temporary directory specified, "
+                  "all intermediate nodes will be kept in memory.\n";
         // keep all temp nodes in memory
         auto temp_nodes = std::make_shared<std::vector<BRWT>>(linkage.size());
         dump_node = [temp_nodes](BRWT&& node, uint64_t id) {

@@ -40,6 +40,11 @@ template <class T>
 LinkageMatrix
 agglomerative_greedy_linkage(std::vector<T>&& columns, size_t num_threads = 1);
 
+template <class T>
+LinkageMatrix
+agglomerative_greedy_linkage_k(std::vector<T>&& columns, size_t num_threads,
+                               size_t k, uint64_t seed);
+
 // Merges points in their original order
 LinkageMatrix agglomerative_linkage_trivial(size_t num_columns);
 

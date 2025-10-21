@@ -44,7 +44,7 @@ class BRWTBottomUpBuilder {
                       size_t num_nodes_parallel = 1,
                       size_t num_threads = 1);
 
-  private:
+  // private:
     // Concatenate multiple Multi-BRWT submatrices
     static BRWT concatenate(std::vector<BRWT>&& submatrices,
                             sdsl::bit_vector *buffer,
