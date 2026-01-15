@@ -35,6 +35,10 @@ class BRWT : public BinaryMatrix, public GetEntrySupport {
     std::vector<Vector<std::pair<Column, uint64_t>>>
     get_column_ranks(const std::vector<Row> &rows) const;
 
+    // Modifies this BRWT by merging it with another BRWT
+    // The other BRWT must have a superset of rows, aligned at the beginning.
+    void update_merge(BRWT& other);
+
     bool load(std::istream &in) override;
     void serialize(std::ostream &out) const override;
 

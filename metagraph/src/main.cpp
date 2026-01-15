@@ -81,7 +81,7 @@ sdsl::bit_vector sample_subcolumn_from_file(const std::string& file_path,
 
     // Directly sample bits from sd_vector without converting to bit_vector
     sdsl::sd_vector<>::rank_1_type rank1(&sdvec);
-    sdsl::sd_vector<>::select_1_type select_1(&sdvec);
+    sdsl::sd_vector<>::select_1_type select_1(&sdvec); // UNUSED and potentially problematic
 
     sdsl::bit_vector subvec(row_indexes.size(), 0);
     for (size_t j = 0; j < row_indexes.size(); ++j) {
@@ -207,14 +207,22 @@ void BM_BRWTLinkageMatrix_streaming(const std::string& folder_path,
     // For each file, sample subcolumn in parallel
     for (size_t i = 0; i < file_paths.size(); ++i) {
         pool.enqueue([&, i]() {
-            auto subvec = std::make_unique<sdsl::bit_vector>(
-                    sample_subcolumn_from_file(file_paths[i], row_indexes));
-            {
-                std::lock_guard<std::mutex> lock(mu);
-                subcolumn_ptrs[i] = std::move(subvec);
-                if ((i + 1) % 1000 == 0 || i + 1 == file_paths.size()) {
-                    logger->info("Sampled {} subcolumns...", i + 1);
+            try {
+                auto subvec = std::make_unique<sdsl::bit_vector>(
+                        sample_subcolumn_from_file(file_paths[i], row_indexes));
+                {
+                    std::lock_guard<std::mutex> lock(mu);
+                    subcolumn_ptrs[i] = std::move(subvec);
+                    if ((i + 1) % 1000 == 0 || i + 1 == file_paths.size()) {
+                        logger->info("Sampled {} subcolumns...", i + 1);
+                    }
                 }
+            } catch (const std::bad_alloc& e) {
+                logger->error("Memory allocation failed for file {}: {}", file_paths[i], e.what());
+                throw;
+            } catch (const std::exception& e) {
+                logger->error("Error processing file {}: {}", file_paths[i], e.what());
+                throw; // Rethrow to let the pool/app handle it (or crash)
             }
         });
     }
@@ -450,7 +458,7 @@ bool load_columns_from_folder_callback(
         for (const auto& entry : fs::directory_iterator(folder_path)) {
             if (entry.is_regular_file()) {
                 const std::string file_name = entry.path().filename().string();
-                if (file_name.rfind(prefix, 0) == 0) {
+                if (file_name.rfind(prefix, 0) == 0) { // Check if file_name starts with prefix
                     file_paths.push_back(entry.path().string());
                 }
             }
@@ -984,6 +992,78 @@ void handle_concat(const std::string& brwt_file1,
     std::cout << "Concatenated BRWT written to " << output_file << "\n";
 }
 
+// Helper to guess columns file path
+std::string get_columns_path(const std::string& brwt_path) {
+    if (brwt_path.size() > 5 && brwt_path.substr(brwt_path.size() - 5) == ".brwt") {
+        return brwt_path.substr(0, brwt_path.size() - 5) + ".columns";
+    }
+    return brwt_path + ".columns";
+}
+
+// Update an existing BRWT with a new one (merge columns)
+void handle_update(const std::string& old_brwt_file,
+                   const std::string& new_brwt_file,
+                   const std::string& output_file) {
+    auto brwt = std::make_unique<BRWT>();
+    {
+        std::ifstream in(old_brwt_file, std::ios::binary);
+        if (!in) throw std::runtime_error("Failed to open " + old_brwt_file);
+        brwt->load(in);
+    }
+
+    auto new_brwt = std::make_unique<BRWT>();
+    {
+        std::ifstream in(new_brwt_file, std::ios::binary);
+        if (!in) throw std::runtime_error("Failed to open " + new_brwt_file);
+        new_brwt->load(in);
+    }
+
+    uint64_t old_num_columns = brwt->num_columns();
+
+    logger->info("Merging new BRWT into the old one...");
+    brwt->update_merge(*new_brwt);
+
+    // Serialize result
+    std::ofstream out(output_file, std::ios::binary);
+    if (!out) throw std::runtime_error("Failed to open " + output_file);
+    brwt->serialize(out);
+
+    logger->info("Updated BRWT written to {}", output_file);
+
+    // Merge columns
+    // Attempt to locate old.columns and new.columns
+    std::string old_cols_path = get_columns_path(old_brwt_file);
+    std::string new_cols_path = get_columns_path(new_brwt_file);
+    std::string out_cols_path = get_columns_path(output_file);
+
+    if (fs::exists(old_cols_path) && fs::exists(new_cols_path)) {
+        logger->info("Merging column names: {} + {} -> {}", old_cols_path, new_cols_path, out_cols_path);
+        
+        auto old_cols = deserialize_column_names(old_cols_path);
+        auto new_cols = deserialize_column_names(new_cols_path);
+        
+        // Append new columns with updated indices
+        // When updating, 'old' columns are still 0..old_num_cols-1
+        // 'new' columns are appended, so their indices shift by old_num_cols.
+        // HOWEVER, wait: The indices stored in the pairs are generally 0..K-1.
+        // BRWTBottomUpBuilder::concatenate appends columns.
+        // So column 'j' of new_brwt becomes column 'old_num_columns + j' of the merged BRWT.
+        // But the stored pairs just map 'index -> name'.
+        // We need to shift the index in the pair.
+        
+        for (auto& p : new_cols) {
+            p.first += old_num_columns;
+        }
+        
+        // Concatenate
+        old_cols.insert(old_cols.end(), new_cols.begin(), new_cols.end());
+        
+        serialize_column_names(old_cols, out_cols_path);
+    } else {
+        logger->warn("Could not find .columns files, skipping column name merge.");
+    }
+}
+
 } // namespace
 
 
@@ -1005,7 +1085,10 @@ void show_usage(const std::string& program_name) {
             << "      - Serve query as a REST API.\n"
             << "  " << program_name
             << " concat <brwtFile1> <brwtFile2> <outputFile> [--sparse]\n"
-            << "      - Concatenate two BRWT files into one, with optional sparse mode.\n";
+            << "      - Concatenate two BRWT files into one, with optional sparse mode.\n"
+            << "  " << program_name
+            << " update <oldBRWT> <newBRWT> <outputFile>\n"
+            << "      - Update an existing BRWT with a new one (merge columns). New BRWT must have >= rows.\n";
 }
 
 
@@ -1156,6 +1239,16 @@ int main(int argc, char* argv[]) {
             bool sparse_mode = (argc == 6 && std::string(argv[5]) == "--sparse");
 
             handle_concat(brwt_file1, brwt_file2, output_file, sparse_mode);
+        } else if (command == "update") {
+            if (argc != 5) {
+                show_usage(argv[0]);
+                return 1;
+            }
+            std::string old_brwt_file = argv[2];
+            std::string new_brwt_file = argv[3];
+            std::string output_file = argv[4];
+
+            handle_update(old_brwt_file, new_brwt_file, output_file);
         } else {
             show_usage(argv[0]);
             return 1;

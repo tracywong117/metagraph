@@ -1,7 +1,9 @@
 #include "brwt.hpp"
+#include "brwt_builders.hpp"
 
 #include <queue>
 #include <numeric>
+#include <thread>
 
 #include "common/algorithms.hpp"
 #include "common/serialization.hpp"
@@ -430,6 +432,45 @@ void BRWT::BFT(std::function<void(const BRWT &node)> callback) const {
         }
         nodes_queue.pop();
     }
+}
+
+void BRWT::update_merge(BRWT& other) {
+    if (other.num_rows() < num_rows()) {
+        throw std::runtime_error("New BRWT must have at least as many rows as old BRWT");
+    }
+
+    // If new BRWT has more rows, we simply pad the current one with zeros
+    // This is valid because the internal structure (children) only depends on the set bits (ranks),
+    // and appending zeros involves no new set bits, so ranks of existing 1s are preserved.
+    if (other.num_rows() > num_rows()) {
+        auto old_bv = nonzero_rows_->to_vector(); // Convert to sdsl::bit_vector
+        sdsl::bit_vector new_bv(other.num_rows(), 0);
+        // Copy old bits
+        for (size_t i = 0; i < old_bv.size(); ++i) {
+            if (old_bv[i]) new_bv[i] = 1;
+        }
+        // Replace the nonzero_rows_ vector
+        nonzero_rows_ = std::make_unique<bit_vector_smallrank>(std::move(new_bv));
+    }
+
+    std::vector<BRWT> submatrices;
+    submatrices.reserve(2);
+
+    // Move current BRWT content into a temp object
+    BRWT self_moved;
+    self_moved.assignments_ = std::move(assignments_);
+    self_moved.nonzero_rows_ = std::move(nonzero_rows_);
+    self_moved.child_nodes_ = std::move(child_nodes_);
+
+    submatrices.push_back(std::move(self_moved));
+    submatrices.push_back(std::move(other));
+
+    ThreadPool pool(std::thread::hardware_concurrency());
+    // Allocate buffer for concatenation (needs size of num_rows)
+    sdsl::bit_vector buffer(submatrices[0].num_rows(), 0);
+
+    // Concatenate and assign back to this
+    *this = BRWTBottomUpBuilder::concatenate(std::move(submatrices), &buffer, pool);
 }
 
 } // namespace matrix

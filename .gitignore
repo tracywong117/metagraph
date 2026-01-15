@@ -31,3 +31,4 @@ tags
 **/cmake-build-debug
 .idea
 *.bin
+test_data/
